@@ -88,6 +88,10 @@ allocproc(void)
 found:
   p->state = EMBRYO;
   p->pid = nextpid++;
+  p->priority = 15;
+  p->t_start = 0;
+  p->t_finish = 0;
+  p->t_burst = 0;
 
   release(&ptable.lock);
 
@@ -214,6 +218,7 @@ fork(void)
 
   acquire(&ptable.lock);
 
+  np->priority = curproc->priority;
   np->state = RUNNABLE;
 
   release(&ptable.lock);
@@ -260,6 +265,11 @@ exit(void)
         wakeup1(initproc);
     }
   }
+
+  acquire(&tickslock);
+  curproc->t_finish = ticks;
+  release(&tickslock);
+  cprintf("Turnaround: %d; Waiting: %d\n", curproc->t_finish - curproc->t_start, curproc->t_finish - curproc->t_start - curproc->t_burst);
 
   // Jump into the scheduler, never to return.
   curproc->state = ZOMBIE;
@@ -311,6 +321,30 @@ wait(void)
   }
 }
 
+int
+set_prior(int prior)
+{
+  struct proc *curproc = myproc();
+
+  acquire(&ptable.lock);
+
+  if (curproc->killed) {
+    release(&ptable.lock);
+    return -1;
+  }
+
+  if(prior > 31) {
+    prior = 31;
+  }
+  if(prior < 0) {
+    prior = 0;
+  }
+
+  curproc->priority = prior;
+  release(&ptable.lock);
+  return prior;
+}
+
 //PAGEBREAK: 42
 // Per-CPU process scheduler.
 // Each CPU calls scheduler() after setting itself up.
@@ -322,7 +356,7 @@ wait(void)
 void
 scheduler(void)
 {
-  struct proc *p;
+  struct proc *p, *q, *choice;
   struct cpu *c = mycpu();
   c->proc = 0;
   
@@ -335,6 +369,29 @@ scheduler(void)
     for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
       if(p->state != RUNNABLE)
         continue;
+      
+      choice = p;
+
+      for(q = ptable.proc; q < &ptable.proc[NPROC]; q++){
+        if(q->state == RUNNABLE && q->priority < choice->priority){
+          choice = q;
+        }
+      }
+
+      for(q = ptable.proc; q < &ptable.proc[NPROC]; q++){
+        if(q != choice){
+          if(--q->priority < 0)
+            q->priority = 0;
+        }
+      }
+      
+      p = choice;
+
+      if (p->t_start == 0){
+        acquire(&tickslock);
+        p->t_start = ticks;
+        release(&tickslock);
+      }
 
       // Switch to chosen process.  It is the process's job
       // to release ptable.lock and then reacquire it
@@ -342,6 +399,9 @@ scheduler(void)
       c->proc = p;
       switchuvm(p);
       p->state = RUNNING;
+
+      if(++p->priority > 31)
+        p->priority = 31;
 
       swtch(&(c->scheduler), p->context);
       switchkvm();

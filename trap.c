@@ -51,6 +51,8 @@ trap(struct trapframe *tf)
     if(cpuid() == 0){
       acquire(&tickslock);
       ticks++;
+      if (myproc() != 0 && myproc()->state == RUNNING)
+        myproc()->t_burst++;
       wakeup(&ticks);
       release(&tickslock);
     }
